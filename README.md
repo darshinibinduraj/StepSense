@@ -43,6 +43,17 @@ Current preprocessing behavior:
 - windows with >50% of label `0` are dropped
 - a window is freezing when >=25% of labels are `2`
 
+### Build `data/daphnet.csv` from raw Daphnet txt files
+
+If you have raw files such as `data/S01R01.txt`, build the consolidated CSV with:
+
+```bash
+python3 scripts/build_daphnet_csv.py --input-dir data --output data/daphnet.csv
+```
+
+This keeps raw files untouched and writes:
+`subject,time,ankle_hori_fwd_accel,ankle_vertical,ankle_lateral,label`
+
 ## Train and evaluate
 
 ```bash
