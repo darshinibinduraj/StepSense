@@ -7,6 +7,7 @@ import os
 import time
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -57,8 +58,16 @@ def main() -> None:
         episode_log_placeholder = st.empty()
 
         model = None
+        live_setup_errors: list[str] = []
         if model_path.exists():
-            model = MovementModel.load(model_path)
+            try:
+                model = MovementModel.load(model_path)
+            except Exception as exc:
+                live_setup_errors.append(f"Failed to load model artifact: {exc}")
+                st.error(
+                    "Model artifact exists but could not be loaded. "
+                    "Re-run training to regenerate `models/model.joblib`."
+                )
         else:
             st.info(
                 "Model file is missing. Run training first:\n\n"
@@ -68,7 +77,14 @@ def main() -> None:
         dataset_df: pd.DataFrame | None = None
         dataset_path = Path(dataset_path_raw)
         if dataset_path.exists():
-            dataset_df = read_dataset(dataset_path)
+            try:
+                dataset_df = read_dataset(dataset_path)
+            except Exception as exc:
+                live_setup_errors.append(f"Failed to read dataset: {exc}")
+                st.error(
+                    "Dataset file exists but could not be parsed. "
+                    "Verify delimiter/encoding and required columns."
+                )
         else:
             st.info(
                 "Dataset file not found at the selected path. Update the sidebar path to run replay monitoring."
@@ -76,36 +92,49 @@ def main() -> None:
 
         selected_participant = None
         if model is not None and dataset_df is not None:
-            participant_column = _resolve_participant_column(dataset_df)
-            participant_ids = sorted(dataset_df[participant_column].astype(str).unique().tolist())
-            default_participant = model.bundle.participant_holdout
-            if default_participant not in participant_ids and participant_ids:
-                default_participant = participant_ids[0]
-            default_index = participant_ids.index(default_participant) if participant_ids else 0
-            selected_participant = st.sidebar.selectbox(
-                "Recording participant",
-                options=participant_ids,
-                index=default_index,
-                help="Defaults to the held-out demo participant from training.",
-            )
+            try:
+                participant_column = _resolve_participant_column(dataset_df)
+                participant_ids = sorted(dataset_df[participant_column].astype(str).unique().tolist())
+                if not participant_ids:
+                    st.warning("Dataset has no participant rows to replay.")
+                else:
+                    default_participant = model.bundle.participant_holdout
+                    if default_participant not in participant_ids:
+                        default_participant = participant_ids[0]
+                    default_index = participant_ids.index(default_participant)
+                    selected_participant = st.sidebar.selectbox(
+                        "Recording participant",
+                        options=participant_ids,
+                        index=default_index,
+                        help="Defaults to the held-out demo participant from training.",
+                    )
+            except Exception as exc:
+                live_setup_errors.append(f"Failed to prepare participant selector: {exc}")
+                st.error(
+                    "Unable to prepare replay participant selection. "
+                    "Check dataset columns for a participant id field."
+                )
 
         if start_monitoring:
-            if model is None or dataset_df is None or selected_participant is None:
+            if model is None or dataset_df is None or selected_participant is None or live_setup_errors:
                 st.error("Cannot start monitoring yet. Ensure model and dataset are available.")
             else:
-                _run_live_monitor(
-                    model=model,
-                    dataset_df=dataset_df,
-                    selected_participant=selected_participant,
-                    playback_speed=playback_speed,
-                    detection_threshold=detection_threshold,
-                    consecutive_windows=consecutive_windows,
-                    chart_placeholder=chart_placeholder,
-                    probability_placeholder=probability_placeholder,
-                    alert_placeholder=alert_placeholder,
-                    activity_placeholder=activity_placeholder,
-                    episode_log_placeholder=episode_log_placeholder,
-                )
+                try:
+                    _run_live_monitor(
+                        model=model,
+                        dataset_df=dataset_df,
+                        selected_participant=selected_participant,
+                        playback_speed=playback_speed,
+                        detection_threshold=detection_threshold,
+                        consecutive_windows=consecutive_windows,
+                        chart_placeholder=chart_placeholder,
+                        probability_placeholder=probability_placeholder,
+                        alert_placeholder=alert_placeholder,
+                        activity_placeholder=activity_placeholder,
+                        episode_log_placeholder=episode_log_placeholder,
+                    )
+                except Exception as exc:
+                    st.error(f"Monitoring run failed: {exc}")
 
     with evaluation_tab:
         st.subheader("Held-out LOSO evaluation")
@@ -115,21 +144,35 @@ def main() -> None:
                 "`python3 scripts/train.py --dataset /path/to/daphnet.csv`"
             )
         else:
-            payload = json.loads(eval_path.read_text(encoding="utf-8"))
-            left, right = st.columns(2)
-            with left:
-                st.markdown("**Random Forest mean metrics**")
-                st.json(payload.get("rf_mean", {}))
-            with right:
-                st.markdown("**Threshold baseline mean metrics**")
-                st.json(payload.get("baseline_mean", {}))
+            try:
+                payload = json.loads(eval_path.read_text(encoding="utf-8"))
+                normalized = _normalize_eval_payload(payload)
+                left, right = st.columns(2)
+                with left:
+                    st.markdown("**Random Forest mean metrics**")
+                    st.json(normalized["rf_mean"])
+                with right:
+                    st.markdown("**Threshold baseline mean metrics**")
+                    st.json(normalized["baseline_mean"])
 
-            st.markdown("**Per-subject Random Forest metrics**")
-            st.dataframe(pd.DataFrame(payload.get("rf_per_subject", [])))
-            st.markdown("**Per-subject threshold baseline metrics**")
-            st.dataframe(pd.DataFrame(payload.get("baseline_per_subject", [])))
-            st.markdown("**Skipped participants (no freezing in held-out fold)**")
-            st.write(payload.get("skipped_participants_no_freezing", []))
+                st.markdown("**Per-subject Random Forest metrics**")
+                st.dataframe(pd.DataFrame(normalized["rf_per_subject"]))
+                st.markdown("**Per-subject threshold baseline metrics**")
+                st.dataframe(pd.DataFrame(normalized["baseline_per_subject"]))
+                st.markdown("**Skipped participants (no freezing in held-out fold)**")
+                st.write(normalized["skipped_participants_no_freezing"])
+            except json.JSONDecodeError as exc:
+                st.error(
+                    "Evaluation artifact is invalid JSON. "
+                    "Re-run training to regenerate `models/eval_results.json`."
+                )
+                st.code(str(exc))
+            except Exception as exc:
+                st.error(
+                    "Evaluation artifact has unexpected schema or rendering failed. "
+                    "Re-run training to regenerate `models/eval_results.json`."
+                )
+                st.code(str(exc))
 
         st.markdown("### Limitations")
         st.markdown(
@@ -339,6 +382,25 @@ def _resolve_ankle_column(df: pd.DataFrame) -> str:
         if pd.api.types.is_numeric_dtype(df[column]):
             return column
     raise ValueError("Unable to resolve ankle signal column for charting.")
+
+
+def _normalize_eval_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Evaluation payload root must be a JSON object.")
+
+    def _as_dict(value: Any) -> dict[str, Any]:
+        return value if isinstance(value, dict) else {}
+
+    def _as_list(value: Any) -> list[Any]:
+        return value if isinstance(value, list) else []
+
+    return {
+        "rf_mean": _as_dict(payload.get("rf_mean", {})),
+        "baseline_mean": _as_dict(payload.get("baseline_mean", {})),
+        "rf_per_subject": _as_list(payload.get("rf_per_subject", [])),
+        "baseline_per_subject": _as_list(payload.get("baseline_per_subject", [])),
+        "skipped_participants_no_freezing": _as_list(payload.get("skipped_participants_no_freezing", [])),
+    }
 
 
 if __name__ == "__main__":
