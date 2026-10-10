@@ -1,0 +1,14 @@
+[
+  {
+    "id": "source-1",
+    "title": "Daphnet Freezing of Gait Dataset",
+    "url": "https://archive.ics.uci.edu/dataset/245/daphnet+freezing+of+gait",
+    "summary": "Wearable-sensor dataset used for prototype model training and evaluation."
+  },
+  {
+    "id": "source-2",
+    "title": "Prototype limitation note",
+    "url": "https://example.org/prototype-limitations",
+    "summary": "Placeholder source entry; replace with curated clinical literature."
+  }
+]

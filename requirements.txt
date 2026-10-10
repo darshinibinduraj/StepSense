@@ -1,1 +1,7 @@
-# StepSense first-pass scaffold currently uses only Python standard library modules.
+numpy
+pandas
+scikit-learn
+joblib
+streamlit
+plotly
+python-dotenv

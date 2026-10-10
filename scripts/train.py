@@ -1,9 +1,9 @@
-"""Train and persist a baseline StepSense movement model from CSV data."""
+"""Train StepSense model, run LOSO evaluation, and save artifacts."""
 
 from __future__ import annotations
 
 import argparse
-import csv
+import json
 import sys
 from pathlib import Path
 
@@ -11,7 +11,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from stepsense.movement_model import MovementModel, build_dataset
+from stepsense.movement_model import (
+    evaluate_loso,
+    evaluation_to_dict,
+    read_dataset,
+    train_final_model,
+)
 from stepsense.schemas import TrainingConfig
 
 
@@ -21,45 +26,55 @@ def parse_args() -> TrainingConfig:
         "--dataset",
         required=True,
         type=Path,
-        help="Path to CSV dataset with a 'label' column and numeric feature columns.",
+        help="Path to Daphnet-format CSV/TSV dataset.",
     )
     parser.add_argument(
-        "--output",
-        required=True,
+        "--model-output",
+        default=Path("models/model.joblib"),
         type=Path,
-        help="Output path for serialized model JSON artifact.",
+        help="Output path for trained demo model.",
+    )
+    parser.add_argument(
+        "--eval-output",
+        default=Path("models/eval_results.json"),
+        type=Path,
+        help="Output path for LOSO evaluation JSON.",
+    )
+    parser.add_argument(
+        "--demo-holdout-participant",
+        default=None,
+        help="Optional participant id to hold out for demo recording.",
     )
     args = parser.parse_args()
-    return TrainingConfig(dataset_path=args.dataset, output_path=args.output)
-
-
-def read_rows(dataset_path: Path) -> tuple[list[str], list[dict[str, str]]]:
-    with dataset_path.open("r", encoding="utf-8", newline="") as input_file:
-        reader = csv.DictReader(input_file)
-        if reader.fieldnames is None:
-            raise ValueError("Dataset CSV has no header row.")
-        if "label" not in reader.fieldnames:
-            raise ValueError("Dataset CSV must include a 'label' column.")
-
-        feature_names = [name for name in reader.fieldnames if name != "label"]
-        if not feature_names:
-            raise ValueError("Dataset CSV must include at least one feature column.")
-
-        rows = list(reader)
-
-    if not rows:
-        raise ValueError("Dataset CSV has no sample rows.")
-
-    return feature_names, rows
+    return TrainingConfig(
+        dataset_path=args.dataset,
+        model_output_path=args.model_output,
+        eval_output_path=args.eval_output,
+        demo_holdout_participant=args.demo_holdout_participant,
+    )
 
 
 def main() -> None:
     config = parse_args()
-    feature_names, rows = read_rows(config.dataset_path)
-    dataset = build_dataset(feature_names=feature_names, rows=rows)
-    model = MovementModel.train(dataset)
-    model.save(config.output_path)
-    print(f"Saved model to {config.output_path}")
+    df = read_dataset(config.dataset_path)
+    evaluation = evaluate_loso(df)
+    evaluation_dict = evaluation_to_dict(evaluation)
+
+    config.eval_output_path.parent.mkdir(parents=True, exist_ok=True)
+    config.eval_output_path.write_text(json.dumps(evaluation_dict, indent=2), encoding="utf-8")
+
+    model, holdout = train_final_model(
+        df,
+        demo_holdout_participant=config.demo_holdout_participant,
+    )
+    model.save(config.model_output_path)
+
+    print("LOSO evaluation (RF mean):", evaluation.rf_mean)
+    print("LOSO evaluation (baseline mean):", evaluation.baseline_mean)
+    print("Skipped participants:", evaluation.skipped_participants_no_freezing)
+    print(f"Saved evaluation to {config.eval_output_path}")
+    print(f"Saved model to {config.model_output_path}")
+    print(f"Demo holdout participant: {holdout}")
 
 
 if __name__ == "__main__":
